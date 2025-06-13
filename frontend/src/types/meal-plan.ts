@@ -61,7 +61,7 @@ export interface MealStatus {
 // -----------------------------------------------------------------------------------
 
 export interface GroceryItem {
-  id: number;            // locally generated identifier for React lists
+  id: string | number; // locally generated identifier for React lists
   name: string;
   quantity: string;      // human-readable "3 cups", "2 lbs", etc.
   category: string;      // Pantry / Produce / Dairy / etc.

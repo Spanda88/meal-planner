@@ -3,6 +3,15 @@ import { Recipe, GroceryItem, MealAssignment, MealStatus } from "@/types/meal-pl
 import { generateMealPlan } from "@/utils/mealPlanGenerator";
 import { useAuth0 } from "@auth0/auth0-react";
 
+interface BackendGroceryItemRaw {
+  _id?: string; // MongoDB ObjectId
+  name: string;
+  quantity?: number;
+  unit?: string;
+  aisle?: string;
+  checked?: boolean;
+}
+
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 export const useMealPlan = () => {
@@ -59,8 +68,8 @@ export const useMealPlan = () => {
                 }
 
                 const groceryData = await groceryRes.json();
-                const backendItems = groceryData.groceryList?.items || [];
-                const transformed: GroceryItem[] = backendItems.map((item: any, idx: number) => ({
+                const backendItems: BackendGroceryItemRaw[] = groceryData.groceryList?.items || [];
+                const transformed: GroceryItem[] = backendItems.map((item, idx: number) => ({
                     id: item._id || idx,
                     name: item.name,
                     quantity: (item.quantity ? `${item.quantity} ${item.unit || ''}` : '').trim(),
@@ -74,9 +83,9 @@ export const useMealPlan = () => {
             }
         }
 
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error('Error in useMealPlan hook:', err);
-        setError(err.message || 'An unexpected error occurred.');
+        setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
         setWeeklyPlan([]);
         setGroceryItems([]);
       } finally {

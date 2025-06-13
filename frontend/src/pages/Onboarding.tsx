@@ -130,7 +130,10 @@ const Onboarding = () => {
     }
   };
 
-  const updatePreferences = (key: keyof typeof preferences, value: any) => {
+  const updatePreferences = <T extends keyof typeof preferences>(
+    key: T,
+    value: typeof preferences[T]
+  ) => {
     setPreferences(prev => ({ ...prev, [key]: value }));
   };
 
