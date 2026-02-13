@@ -6,9 +6,12 @@ logs/
 *.log
 npm-debug.log*
 
-# Environment variables
+# Environment variables (do not commit real .env; use examples for demos)
 .env
 .env.*
+!.env.example
+!**/.env.example
+!**/.env.local.example
 
 # Coverage
 coverage/

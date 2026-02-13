@@ -2,6 +2,57 @@ const Recipe = require('../models/Recipe');
 const recipeService = require('../services/recipeService');
 const spoonacularService = require('../services/spoonacularService');
 
+/**
+ * Filter recipes by user preferences. Used to pull unique matches from DB only.
+ * @param {Array} recipes - Mongoose recipe documents
+ * @param {Object} opts - { cuisineTypes, dietaryRestrictions, cookTimeCategory }
+ * @returns {Array} filtered recipes (unique by _id)
+ */
+function filterRecipesByPreferences(recipes, opts) {
+  const cuisineTypes = (opts.cuisineTypes || []).map(c => c.toLowerCase());
+  const dietaryRestrictions = (opts.dietaryRestrictions || []).map(d => d.toLowerCase());
+  let minCook = null, maxCook = null;
+  if (opts.cookTimeCategory === 'Hangry') {
+    maxCook = 20;
+  } else if (opts.cookTimeCategory === 'Hungry') {
+    minCook = 21;
+    maxCook = 40;
+  }
+
+  const filtered = recipes.filter(r => {
+    if (cuisineTypes.length) {
+      const recipeCuisine = (r.cuisine || '').toLowerCase();
+      const recipeTags = (r.tags || []).map(t => t.toLowerCase());
+      const hasMatchingCuisine = cuisineTypes.some(cuisine =>
+        recipeCuisine.includes(cuisine) || recipeTags.some(tag => tag.includes(cuisine))
+      );
+      if (!hasMatchingCuisine) return false;
+    }
+    if (dietaryRestrictions.length &&
+      !dietaryRestrictions.every(dr => {
+        const tagsLower = (r.tags || []).map(t => t.toLowerCase());
+        return tagsLower.some(tag => tag.includes(dr));
+      })
+    ) return false;
+    // Cook time: if recipe has no cookingTime, allow it; otherwise apply range
+    if (r.cookingTime != null) {
+      if (minCook != null && maxCook != null && (r.cookingTime < minCook || r.cookingTime > maxCook)) return false;
+      if (minCook == null && maxCook != null && r.cookingTime > maxCook) return false;
+      if (minCook != null && maxCook == null && r.cookingTime < minCook) return false;
+    }
+    return true;
+  });
+
+  // Return unique by _id (in case of any duplicate refs)
+  const seen = new Set();
+  return filtered.filter(r => {
+    const id = r._id?.toString();
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 exports.list = async (req, res) => {
   try {
     const recipes = await recipeService.listRecipes();
@@ -68,120 +119,43 @@ exports.seedRandom = async (req, res) => {
   }
 };
 
-// Discover recipes based on user preferences
+// Discover recipes: filter recipes stored in the DB by user preferences; only call Spoonacular if no matches.
 exports.discover = async (req, res) => {
   try {
-    let { cuisineTypes = [], dietaryRestrictions = [], cookTimeCategory, cookingTime, minServings } = req.body;
-    console.log('[DISCOVER] Incoming request:', req.body);
-    // Normalize all to lowercase for case-insensitive matching
-    cuisineTypes = (cuisineTypes || []).map(c => c.toLowerCase());
-    dietaryRestrictions = (dietaryRestrictions || []).map(d => d.toLowerCase());
-    // Treat placeholders like "no-restrictions" or "none" as meaning no restrictions
-    if (dietaryRestrictions.length === 1 && ['no-restrictions', 'none', ''].includes(dietaryRestrictions[0])) {
+    let { cuisineTypes = [], dietaryRestrictions = [], cookTimeCategory, cookingTime } = req.body;
+    if (!cookTimeCategory && cookingTime) cookTimeCategory = cookingTime;
+    if (dietaryRestrictions.length === 1 && ['no-restrictions', 'none', ''].includes((dietaryRestrictions[0] || '').toLowerCase())) {
       dietaryRestrictions = [];
     }
-    console.log('[DISCOVER] Normalized cuisineTypes:', cuisineTypes);
-    console.log('[DISCOVER] Normalized dietaryRestrictions:', dietaryRestrictions);
-    // Allow both keys from older clients (apply fallback BEFORE we derive min/max)
-    if (!cookTimeCategory && cookingTime) {
-      cookTimeCategory = cookingTime;
-    }
-    // Map cookTimeCategory to min/max
-    let minCook = null, maxCook = null;
-    if (cookTimeCategory === 'Hangry') {
-      maxCook = 20;
-    } else if (cookTimeCategory === 'Hungry') {
-      minCook = 21;
-      maxCook = 40;
-    }
-    // Patient has no max cook time
-    console.log('[DISCOVER] Cook time parameters:', { maxCook });
+    console.log('[DISCOVER] Request:', { cuisineTypes: cuisineTypes?.length, dietaryRestrictions: dietaryRestrictions?.length, cookTimeCategory });
 
-    // Fetch all recipes from the database
-    let allRecipes = await Recipe.find();
+    const allRecipes = await Recipe.find();
     console.log(`[DISCOVER] Total recipes in DB: ${allRecipes.length}`);
 
-    let recipes = allRecipes.filter(r => {
-      // Log each recipe's filtering process
-      console.log(`[DISCOVER] Filtering recipe: ${r.title}`);
-      console.log(`[DISCOVER] Recipe details:`, {
-        cuisine: r.cuisine,
-        tags: r.tags,
-        cookingTime: r.cookingTime,
-        servingSize: r.servingSize
-      });
-
-      // Cuisine match (if any)
-      if (cuisineTypes.length) {
-        const recipeCuisine = (r.cuisine || '').toLowerCase();
-        const recipeTags = (r.tags || []).map(t => t.toLowerCase());
-        const hasMatchingCuisine = cuisineTypes.some(cuisine => 
-          recipeCuisine.includes(cuisine.toLowerCase()) || 
-          recipeTags.some(tag => tag.includes(cuisine.toLowerCase()))
-        );
-        if (!hasMatchingCuisine) return false;
-      }
-      // Dietary restrictions: allow substring matches (e.g., "lacto ovo vegetarian" should satisfy "vegetarian")
-      if (
-        dietaryRestrictions.length &&
-        !dietaryRestrictions.every(dr => {
-          const drLower = dr.toLowerCase();
-          const tagsLower = (r.tags || []).map(t => t.toLowerCase());
-          return tagsLower.some(tag => tag.includes(drLower));
-        })
-      )
-        return false;
-      // Cooking time
-      if (minCook !== null && maxCook !== null && !(r.cookingTime >= minCook && r.cookingTime <= maxCook)) return false;
-      if (minCook === null && maxCook !== null && !(r.cookingTime <= maxCook)) return false;
-      if (minCook !== null && maxCook === null && !(r.cookingTime >= minCook)) return false;
-      // Serving size no longer strictly filters; users can scale recipes.
-      return true;
+    let recipes = filterRecipesByPreferences(allRecipes, {
+      cuisineTypes: cuisineTypes || [],
+      dietaryRestrictions: dietaryRestrictions || [],
+      cookTimeCategory
     });
+    console.log(`[DISCOVER] After filter (DB only): ${recipes.length} unique recipes`);
 
-    console.log(`[DISCOVER] Recipes after filtering: ${recipes.length}`);
-
-    // If not enough, try to fetch more from Spoonacular
-    if (recipes.length < 10) {
+    // Only call Spoonacular when we have zero matches (to grow the DB; otherwise use stored recipes only)
+    if (recipes.length === 0) {
       try {
-        console.log('[DISCOVER] Not enough recipes, calling Spoonacular...');
-        await spoonacularService.searchRecipes({ cuisineTypes, dietaryRestrictions, cookTimeCategory, minServings });
-        allRecipes = await Recipe.find();
-        console.log(`[DISCOVER] Total recipes in DB after Spoonacular: ${allRecipes.length}`);
-        
-        // Apply the same filtering to the updated recipe set
-        recipes = allRecipes.filter(r => {
-          if (cuisineTypes.length) {
-            const recipeCuisine = (r.cuisine || '').toLowerCase();
-            const recipeTags = (r.tags || []).map(t => t.toLowerCase());
-            const hasMatchingCuisine = cuisineTypes.some(cuisine => 
-              recipeCuisine.includes(cuisine.toLowerCase()) || 
-              recipeTags.some(tag => tag.includes(cuisine.toLowerCase()))
-            );
-            if (!hasMatchingCuisine) return false;
-          }
-          if (
-            dietaryRestrictions.length &&
-            !dietaryRestrictions.every(dr => {
-              const drLower = dr.toLowerCase();
-              const tagsLower = (r.tags || []).map(t => t.toLowerCase());
-              return tagsLower.some(tag => tag.includes(drLower));
-            })
-          )
-            return false;
-          if (minCook !== null && maxCook !== null && !(r.cookingTime >= minCook && r.cookingTime <= maxCook)) return false;
-          if (minCook === null && maxCook !== null && !(r.cookingTime <= maxCook)) return false;
-          if (minCook !== null && maxCook === null && !(r.cookingTime >= minCook)) return false;
-          // Skip serving size filtering; allow scaling.
-          return true;
+        console.log('[DISCOVER] No matches in DB, calling Spoonacular...');
+        await spoonacularService.searchRecipes({ cuisineTypes, dietaryRestrictions, cookTimeCategory, minServings: req.body.minServings });
+        const updated = await Recipe.find();
+        recipes = filterRecipesByPreferences(updated, {
+          cuisineTypes: cuisineTypes || [],
+          dietaryRestrictions: dietaryRestrictions || [],
+          cookTimeCategory
         });
-        console.log(`[DISCOVER] Recipes after Spoonacular filtering: ${recipes.length}`);
+        console.log(`[DISCOVER] After Spoonacular + filter: ${recipes.length} unique recipes`);
       } catch (spoonacularError) {
-        console.error('[DISCOVER] Spoonacular fetch failed:', spoonacularError);
+        console.error('[DISCOVER] Spoonacular fetch failed:', spoonacularError.message);
       }
     }
-    console.log(`[DISCOVER] Returning ${recipes.length} recipes`);
-    // Wrap in an object so the client expects { recipes: [...] }
+
     res.json({ recipes: Array.isArray(recipes) ? recipes : [] });
   } catch (err) {
     console.error('[DISCOVER] Error:', err);

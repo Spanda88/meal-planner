@@ -1,4 +1,6 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+
 const axios = require('axios');
 const Recipe = require('../models/Recipe');
 const GroceryList = require('../models/GroceryList');
@@ -41,8 +43,12 @@ async function axiosWithRetry(config, maxRetries = 5, initialDelay = 1000) {
   }
 }
 
-// Function to seed the database with recipes
-async function seedRecipes() {
+// Function to seed the database with recipes (no filters — general recipes only).
+// Options: { batchSize: 10, maxBatches: 5 } — batchSize per request, maxBatches = how many requests.
+async function seedRecipes(options = {}) {
+  const maxBatchSize = options.batchSize ?? 10;
+  const maxBatches = options.maxBatches ?? 5;
+
   try {
     // Check if we're connected to MongoDB
     if (mongoose.connection.readyState !== 1) {
@@ -54,12 +60,10 @@ async function seedRecipes() {
     }
 
     let offset = 0;
-    const maxBatchSize = 2; // Reduced for testing
     let totalRecipesFetched = 0;
     let totalResults = Infinity; // Will be updated with first API call
 
     let batchCount = 0;
-    const maxBatches = 1; // Only fetch 1 batch for testing
 
     // NEW: keep track of everything we insert so we can safely return it later
     const insertedRecipes = [];
@@ -126,12 +130,18 @@ async function seedRecipes() {
         sourceUrl: recipe.sourceUrl
       }));
 
-      console.log(`Attempting to insert ${recipes.length} recipes...`);
-      const result = await Recipe.insertMany(recipes);
-      console.log(`Successfully inserted ${result.length} recipes`);
-
-      // NEW: accumulate for final return
-      insertedRecipes.push(...result);
+      const apiIds = recipes.map(r => r.apiId);
+      const existing = await Recipe.find({ apiId: { $in: apiIds } }).select('apiId').lean();
+      const existingSet = new Set(existing.map(e => String(e.apiId)));
+      const toInsert = recipes.filter(r => !existingSet.has(String(r.apiId)));
+      if (toInsert.length === 0) {
+        console.log(`Batch at offset ${offset}: all ${recipes.length} already in DB, skipping.`);
+      } else {
+        console.log(`Inserting ${toInsert.length} new recipes (${recipes.length - toInsert.length} already in DB)...`);
+        const result = await Recipe.insertMany(toInsert);
+        console.log(`Successfully inserted ${result.length} recipes`);
+        insertedRecipes.push(...result);
+      }
 
       totalRecipesFetched += recipes.length;
       offset += recipes.length; // Use actual number of recipes received for next offset
